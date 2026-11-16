@@ -1,0 +1,404 @@
+from pathlib import Path
+
+code = r'''"""
+FA 2 MOCK ASSIGNMENT
+LangChain + Python
+------------------
+Q1: AI-Powered Patient Consultation Assistant
+Q2: AI Wildlife Insights Assistant (RAG + Chat History)
+
+Before running:
+1. Install the packages listed at the bottom of this file.
+2. Add OPENAI_API_KEY to a .env file in this folder.
+3. For Q2, place the wildlife research PDF at:
+   documents/Karnataka_Wildlife_Research.pdf
+
+Run:
+    python fa2_assignment.py
+
+The program asks whether to run Q1 or Q2. Each section is kept in
+the requested order: Q1 first, then Q2.
+"""
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Shared LLM and embedding imports
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+
+
+# ============================================================
+# Q1 - AI-POWERED PATIENT CONSULTATION ASSISTANT
+# ============================================================
+
+def run_q1():
+    """Collect patient details and maintain a multi-turn chat session."""
+
+    print("\n========== Q1: PATIENT CONSULTATION ASSISTANT ==========\n")
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """
+            You are an AI-powered patient consultation assistant.
+
+            Your responsibilities:
+            1. Summarize the patient's information.
+            2. Provide general, preliminary health information.
+            3. Suggest suitable next steps.
+            4. Use previous conversation history for follow-up questions.
+            5. Do not ask again for information already available.
+
+            For the initial consultation, use this format:
+
+            Patient Summary:
+            Symptoms:
+            Medical History:
+            Preliminary Guidance:
+            Recommended Next Steps:
+
+            For follow-up questions, answer directly using the
+            previous conversation.
+
+            Safety:
+            - Do not claim to provide a medical diagnosis.
+            - Do not prescribe medication.
+            - Recommend assessment by a qualified healthcare professional.
+            - Recommend urgent medical care if the reported symptoms
+              may indicate an emergency.
+            """
+        ),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}")
+    ])
+
+    # Prompt -> model -> string output
+    chain = prompt | llm | StrOutputParser()
+
+    # Store a separate message history for each session ID.
+    store = {}
+
+    def get_session_history(session_id: str):
+        if session_id not in store:
+            store[session_id] = InMemoryChatMessageHistory()
+        return store[session_id]
+
+    chatbot = RunnableWithMessageHistory(
+        chain,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="chat_history"
+    )
+
+    session_id = input("Enter a patient session ID (example: patient_001): ").strip()
+    if not session_id:
+        session_id = "patient_001"
+
+    print("\n--- Patient Information ---")
+    name = input("Enter your name: ")
+    age = input("Enter your age: ")
+    symptoms = input("Enter your symptoms: ")
+    medical_history = input("Enter medical history (or type None): ")
+
+    patient_input = (
+        f"Name: {name}\n"
+        f"Age: {age}\n"
+        f"Symptoms: {symptoms}\n"
+        f"Medical History: {medical_history}"
+    )
+
+    response = chatbot.invoke(
+        {"input": patient_input},
+        config={"configurable": {"session_id": session_id}}
+    )
+
+    print("\nAssistant:\n")
+    print(response)
+
+    print("\nYou can now ask follow-up questions.")
+    print("Type 'exit' to end the session.")
+
+    while True:
+        user_input = input("\nYou: ").strip()
+
+        if user_input.lower() in {"exit", "quit"}:
+            break
+
+        if not user_input:
+            continue
+
+        response = chatbot.invoke(
+            {"input": user_input},
+            config={"configurable": {"session_id": session_id}}
+        )
+
+        print("\nAssistant:\n")
+        print(response)
+
+    print("\n--- Conversation History ---")
+    for message in get_session_history(session_id).messages:
+        print(f"{type(message).__name__}: {message.content}")
+
+
+# ============================================================
+# Q2 - AI WILDLIFE INSIGHTS ASSISTANT
+# RAG + HISTORY-AWARE RETRIEVAL
+# ============================================================
+
+def run_q2():
+    """Load a wildlife PDF, create a FAISS index, and chat with RAG."""
+
+    print("\n========== Q2: WILDLIFE INSIGHTS ASSISTANT ==========\n")
+
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_community.vectorstores import FAISS
+    from langchain.chains import (
+        create_history_aware_retriever,
+        create_retrieval_chain,
+        create_stuff_documents_chain
+    )
+
+    # 1. Initialize the language model and embedding model.
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0
+    )
+
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small"
+    )
+
+    # 2. Load the PDF.
+    pdf_path = Path("documents/Karnataka_Wildlife_Research.pdf")
+
+    if not pdf_path.exists():
+        raise FileNotFoundError(
+            f"PDF not found: {pdf_path}\n"
+            "Create a 'documents' folder and put the wildlife research PDF inside it."
+        )
+
+    loader = PyPDFLoader(str(pdf_path))
+    documents = loader.load()
+
+    if not documents:
+        raise ValueError("The PDF loader did not extract any pages.")
+
+    print("Total pages loaded:", len(documents))
+    print("\nFirst page preview:")
+    print(documents[0].page_content[:500])
+
+    # 3. Split the documents into chunks.
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+
+    chunks = text_splitter.split_documents(documents)
+
+    print("\nTotal chunks created:", len(chunks))
+
+    # 4. Create the FAISS vector database.
+    vectorstore = FAISS.from_documents(
+        documents=chunks,
+        embedding=embeddings
+    )
+
+    print("FAISS vector database created successfully.")
+
+    # 5. Configure the retriever.
+    retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 4}
+    )
+
+    # Optional retrieval check.
+    test_query = "What wildlife information is covered in this document?"
+    retrieved_docs = retriever.invoke(test_query)
+
+    print("\nRetrieved document chunks for a sample query:", len(retrieved_docs))
+
+    # 6. Create the prompt used to answer questions from retrieved context.
+    answer_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """
+            You are an AI Wildlife Insights Assistant for the
+            Karnataka Wildlife Research Division.
+
+            Analyze the supplied ecological research context.
+
+            Rules:
+            - Base factual claims on the retrieved context.
+            - Do not invent wildlife statistics or species records.
+            - If the context does not contain the answer, say that
+              the information is not available in the supplied document.
+            - Use previous conversation history to understand follow-up
+              questions.
+            - Avoid unnecessary repetition.
+
+            When applicable, structure reports as:
+
+            1. Concise Summary
+            2. Species List
+            3. Ecosystem-Level Insights
+               a. Habitats
+               b. Ecological Relationships
+               c. Conservation Issues
+
+            Retrieved Context:
+            {context}
+            """
+        ),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}")
+    ])
+
+    # 7. Create a chain that inserts retrieved documents into {context}.
+    document_chain = create_stuff_documents_chain(
+        llm=llm,
+        prompt=answer_prompt
+    )
+
+    # 8. Create a prompt that rewrites follow-up questions as standalone
+    # questions. It does not answer the question.
+    contextualize_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """
+            Given the conversation history and the latest user question,
+            rewrite the question as a standalone question that can be
+            used for document retrieval.
+
+            Do not answer the question.
+            If it is already a standalone question, return it unchanged.
+            """
+        ),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}")
+    ])
+
+    # 9. Create a history-aware retriever.
+    history_aware_retriever = create_history_aware_retriever(
+        llm,
+        retriever,
+        contextualize_prompt
+    )
+
+    # 10. Combine the retriever and document chain into a RAG chain.
+    retrieval_chain = create_retrieval_chain(
+        history_aware_retriever,
+        document_chain
+    )
+
+    # 11. Create session-based chat history storage.
+    store = {}
+
+    def get_session_history(session_id: str):
+        if session_id not in store:
+            store[session_id] = InMemoryChatMessageHistory()
+        return store[session_id]
+
+    # 12. Add conversational memory to the retrieval chain.
+    memory_chain = RunnableWithMessageHistory(
+        retrieval_chain,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="chat_history",
+        output_messages_key="answer"
+    )
+
+    session_id = input(
+        "\nEnter a wildlife session ID (example: wildlife_session_001): "
+    ).strip()
+
+    if not session_id:
+        session_id = "wildlife_session_001"
+
+    print("\nAsk questions about the wildlife research PDF.")
+    print("Type 'exit' to end the session.")
+
+    while True:
+        query = input("\nYou: ").strip()
+
+        if query.lower() in {"exit", "quit"}:
+            break
+
+        if not query:
+            continue
+
+        response = memory_chain.invoke(
+            {"input": query},
+            config={"configurable": {"session_id": session_id}}
+        )
+
+        print("\nAssistant:\n")
+        print(response["answer"])
+
+        # Show source pages used for the answer.
+        print("\n--- Retrieved Sources ---")
+        for doc in response.get("context", []):
+            page = doc.metadata.get("page", "Unknown")
+            source = doc.metadata.get("source", "Unknown")
+            print(f"Source: {source} | Page: {page + 1 if isinstance(page, int) else page}")
+
+    print("\n--- Conversation History ---")
+    for message in get_session_history(session_id).messages:
+        print(f"{type(message).__name__}: {message.content}")
+
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+if __name__ == "__main__":
+
+    if not os.getenv("OPENAI_API_KEY"):
+        raise EnvironmentError(
+            "OPENAI_API_KEY is missing. Add it to your .env file."
+        )
+
+    print("FA 2 MOCK ASSIGNMENT")
+    print("1. Run Q1 - Patient Consultation Assistant")
+    print("2. Run Q2 - Wildlife Insights Assistant")
+
+    choice = input("\nChoose an assignment (1 or 2): ").strip()
+
+    if choice == "1":
+        run_q1()
+    elif choice == "2":
+        run_q2()
+    else:
+        print("Invalid choice. Please run the program and choose 1 or 2.")
+
+
+# ============================================================
+# REQUIREMENTS
+# ============================================================
+# Install with:
+#
+# pip install -U "langchain==0.3.27" "langchain-openai>=0.3,<0.4" \
+#     "langchain-community>=0.3,<0.4" \
+#     "langchain-text-splitters>=0.3,<0.4" \
+#     faiss-cpu pypdf python-dotenv
+#
+# .env file:
+# OPENAI_API_KEY=your_api_key_here
+'''
+
+path = Path("/mnt/data/fa2_assignment.py")
+path.write_text(code, encoding="utf-8")
+print(f"Created: {path}")
